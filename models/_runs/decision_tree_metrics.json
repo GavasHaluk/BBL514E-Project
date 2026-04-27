@@ -1,0 +1,27 @@
+{
+  "name": "decision_tree",
+  "best_params": {
+    "clf__max_depth": null,
+    "clf__min_samples_leaf": 5
+  },
+  "best_cv_score": 0.9984393420199098,
+  "fit_seconds": 1501.0285995006561,
+  "n_train_used": 1981520,
+  "n_test": 424612,
+  "test_metrics": {
+    "accuracy": 0.9990980000565222,
+    "precision": 0.9962216024219887,
+    "recall": 0.9992109699092615,
+    "f1": 0.9977140469724551,
+    "auc": 0.9994088441594597,
+    "tpr": 0.9992109699092615,
+    "fpr": 0.0009297141935389263,
+    "confusion_matrix": {
+      "tn": 340648,
+      "fp": 317,
+      "fn": 66,
+      "tp": 83581
+    }
+  },
+  "saved_at": "2026-04-26"
+}

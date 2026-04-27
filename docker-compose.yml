@@ -1,0 +1,12 @@
+services:
+  ids:
+    build: .
+    image: bbl514e-ids:latest
+    container_name: bbl514e-ids
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models:ro
+    environment:
+      - MODEL_PATH=/app/models/model.pkl
+    restart: unless-stopped

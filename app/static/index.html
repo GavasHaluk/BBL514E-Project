@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CICIDS2017 Intrusion Detection</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Network Intrusion Detection</h1>
+      <p class="subtitle">BBL514E · CICIDS2017 · <span id="predictor-tag">loading</span></p>
+    </div>
+    <button id="theme-toggle" type="button" class="ghost" aria-label="Toggle dark mode">◐</button>
+  </header>
+
+  <main>
+    <section class="upload-card">
+      <h2>Upload a flow CSV</h2>
+      <p>CICIDS2017-style features (78 columns). Optional <code>Label</code> column enables metrics. Limit 25 MB.</p>
+      <form id="upload-form">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="file-input" accept=".csv" />
+          <span id="file-label">Choose a .csv file or drop it here</span>
+        </label>
+        <div class="btn-row">
+          <button id="submit-btn" type="submit" disabled>Predict</button>
+          <button id="sample-btn" type="button" class="ghost">Try bundled sample</button>
+        </div>
+      </form>
+      <div id="status" class="status">
+        <span id="spinner" class="spinner hidden"></span>
+        <span id="status-text"></span>
+      </div>
+    </section>
+
+    <section id="results" class="results hidden">
+      <div class="card" id="summary-card">
+        <div class="card-head">
+          <h3>Summary</h3>
+          <button id="download-btn" type="button" class="ghost small" disabled>Download predictions.csv</button>
+        </div>
+        <div class="kv-grid">
+          <div><span class="k">Rows</span><span class="v" id="s-rows">—</span></div>
+          <div><span class="k">Benign</span><span class="v" id="s-benign">—</span></div>
+          <div><span class="k">Malicious</span><span class="v" id="s-mal">—</span></div>
+          <div>
+            <span class="k">% Malicious</span>
+            <span class="v" id="s-pct">—</span>
+            <span class="baseline" id="s-baseline"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card hidden" id="metrics-card">
+        <h3>Metrics</h3>
+        <div class="metrics-row">
+          <div class="metric-box"><span class="k">Accuracy</span><span class="v" id="m-acc">—</span></div>
+          <div class="metric-box"><span class="k">F1</span><span class="v" id="m-f1">—</span></div>
+          <div class="metric-box"><span class="k">AUC</span><span class="v" id="m-auc">—</span></div>
+        </div>
+        <div class="metrics-cols">
+          <div>
+            <h4>Confusion matrix</h4>
+            <table class="cm">
+              <thead>
+                <tr><th></th><th>Pred Benign</th><th>Pred Malicious</th><th>Total</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th>True Benign</th>
+                  <td class="cm-cell"><span id="cm-tn">—</span><span class="pct" id="cm-tn-pct"></span></td>
+                  <td class="cm-cell bad"><span id="cm-fp">—</span><span class="pct" id="cm-fp-pct"></span></td>
+                  <td class="marg" id="cm-row-ben">—</td>
+                </tr>
+                <tr>
+                  <th>True Malicious</th>
+                  <td class="cm-cell bad"><span id="cm-fn">—</span><span class="pct" id="cm-fn-pct"></span></td>
+                  <td class="cm-cell good"><span id="cm-tp">—</span><span class="pct" id="cm-tp-pct"></span></td>
+                  <td class="marg" id="cm-row-mal">—</td>
+                </tr>
+                <tr class="totals">
+                  <th>Total</th>
+                  <td class="marg" id="cm-col-ben">—</td>
+                  <td class="marg" id="cm-col-mal">—</td>
+                  <td class="marg" id="cm-col-all">—</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="muted small">Off-diagonal cells are errors. Recall = <span id="m-rec">—</span>, Precision = <span id="m-prec">—</span>.</p>
+          </div>
+          <div>
+            <h4>ROC curve</h4>
+            <svg id="roc-svg" viewBox="-22 -8 148 140" class="roc" aria-label="ROC curve" preserveAspectRatio="xMidYMid meet">
+              <line x1="0" y1="100" x2="100" y2="0" class="roc-baseline" />
+              <line x1="0" y1="100" x2="100" y2="100" class="roc-axis" />
+              <line x1="0" y1="100" x2="0" y2="0" class="roc-axis" />
+
+              <g class="roc-tick">
+                <line x1="0"   y1="100" x2="0"   y2="103" /><text x="0"   y="110" text-anchor="middle">0</text>
+                <line x1="25"  y1="100" x2="25"  y2="103" /><text x="25"  y="110" text-anchor="middle">0.25</text>
+                <line x1="50"  y1="100" x2="50"  y2="103" /><text x="50"  y="110" text-anchor="middle">0.5</text>
+                <line x1="75"  y1="100" x2="75"  y2="103" /><text x="75"  y="110" text-anchor="middle">0.75</text>
+                <line x1="100" y1="100" x2="100" y2="103" /><text x="100" y="110" text-anchor="middle">1</text>
+              </g>
+              <g class="roc-tick">
+                <line x1="0" y1="100" x2="-3" y2="100" /><text x="-5" y="102" text-anchor="end">0</text>
+                <line x1="0" y1="75"  x2="-3" y2="75"  /><text x="-5" y="77"  text-anchor="end">0.25</text>
+                <line x1="0" y1="50"  x2="-3" y2="50"  /><text x="-5" y="52"  text-anchor="end">0.5</text>
+                <line x1="0" y1="25"  x2="-3" y2="25"  /><text x="-5" y="27"  text-anchor="end">0.75</text>
+                <line x1="0" y1="0"   x2="-3" y2="0"   /><text x="-5" y="2"   text-anchor="end">1</text>
+              </g>
+
+              <polyline id="roc-curve" points="" class="roc-line" />
+
+              <text x="50" y="124" class="roc-label" text-anchor="middle">False Positive Rate</text>
+              <text x="-18" y="50" class="roc-label" text-anchor="middle" transform="rotate(-90 -18 50)">True Positive Rate</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="rows-card">
+        <div class="card-head">
+          <h3>Predictions <span id="rows-cap" class="muted small"></span></h3>
+          <label class="muted small">
+            <input type="checkbox" id="mal-only" /> Malicious only
+          </label>
+        </div>
+        <div class="pagination muted small" id="pagination">
+          <button type="button" class="ghost small" id="page-first">«</button>
+          <button type="button" class="ghost small" id="page-prev">‹</button>
+          <span id="page-info">Page 1 of 1</span>
+          <button type="button" class="ghost small" id="page-next">›</button>
+          <button type="button" class="ghost small" id="page-last">»</button>
+          <label>
+            Page size:
+            <select id="page-size">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+            </select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table id="rows-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-sort-key="row" data-sort-type="num">#</th>
+                <th class="sortable" data-sort-key="predicted">Predicted</th>
+                <th class="sortable" data-sort-key="proba_malicious" data-sort-type="num">P(Malicious)</th>
+                <th class="sortable" data-sort-key="true">True</th>
+                <th class="sortable" data-sort-key="Destination Port" data-sort-type="num">Dst Port</th>
+                <th class="sortable" data-sort-key="Flow Duration" data-sort-type="num">Duration (µs)</th>
+                <th class="sortable" data-sort-key="Total Fwd Packets" data-sort-type="num">Fwd Pkts</th>
+                <th class="sortable" data-sort-key="SYN Flag Count" data-sort-type="num">SYN</th>
+                <th class="sortable" data-sort-key="FIN Flag Count" data-sort-type="num">FIN</th>
+                <th class="sortable" data-sort-key="RST Flag Count" data-sort-type="num">RST</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
