@@ -128,10 +128,6 @@ def write_summary(top_features, lc):
         f"- Final training F1: {lc['train_f1_mean'][-1]:.4f}",
         f"- Final cross-val F1: {lc['val_f1_mean'][-1]:.4f}",
         f"- Train/val gap: {lc['final_gap']:.4f}",
-        "",
-        "A small gap between training and cross-val F1 indicates the model "
-        "is not overfitting. Cross-val F1 flattening at full data suggests "
-        "additional samples would yield marginal gains.",
     ]
     out = FIGS_DIR / "diagnostics_summary.md"
     out.write_text("\n".join(lines))

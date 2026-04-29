@@ -55,8 +55,5 @@ def get_predictor():
         log.warning("MODEL_PATH not set; falling back to MockPredictor.")
         return MockPredictor()
     if not Path(path).exists():
-        raise FileNotFoundError(
-            f"MODEL_PATH={path} does not exist. Set MODEL_PATH to a valid pickle "
-            "or unset it to use the mock predictor."
-        )
+        raise FileNotFoundError(f"MODEL_PATH={path}")
     return SklearnPredictor(path)

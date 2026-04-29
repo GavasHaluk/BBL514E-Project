@@ -16,12 +16,12 @@ Generated from 7 model runs in `models/_runs/`.
 
 ## Success criteria (proposal §6C)
 
-- ✅ **decision_tree** acc 99.91% (need >90), FPR 0.09% (need <5)
-- ✅ **ensemble_rf_mlp** acc 99.81% (need >90), FPR 0.19% (need <5)
-- ✅ **knn** acc 98.98% (need >90), FPR 1.02% (need <5)
-- ✅ **mlp** acc 99.46% (need >90), FPR 0.58% (need <5)
-- ❌ **naive_bayes** acc 49.22% (need >90), FPR 62.78% (need <5)
-- ✅ **random_forest** acc 99.91% (need >90), FPR 0.09% (need <5)
-- ✅ **svm_rbf** acc 96.53% (need >90), FPR 3.84% (need <5)
+- [PASS] **decision_tree** acc 99.91% (need >90), FPR 0.09% (need <5)
+- [PASS] **ensemble_rf_mlp** acc 99.81% (need >90), FPR 0.19% (need <5)
+- [PASS] **knn** acc 98.98% (need >90), FPR 1.02% (need <5)
+- [PASS] **mlp** acc 99.46% (need >90), FPR 0.58% (need <5)
+- [FAIL] **naive_bayes** acc 49.22% (need >90), FPR 62.78% (need <5)
+- [PASS] **random_forest** acc 99.91% (need >90), FPR 0.09% (need <5)
+- [PASS] **svm_rbf** acc 96.53% (need >90), FPR 3.84% (need <5)
 
-- ❌ Ensemble vs singles: ensemble F1 = 99.53%, best single F1 = 99.77% (loses to best single)
+- Ensemble vs singles: ensemble F1 = 99.53%, best single F1 = 99.77% (loses to best single)

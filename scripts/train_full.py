@@ -127,7 +127,7 @@ F1_BINARY = make_scorer(f1_score, pos_label=MALICIOUS)
 
 
 def train_one(name, clf, grid, subsample_n, gs_n_jobs, X_tr, y_tr, X_te, y_te):
-    print(f"\n{'='*70}\n{name}\n{'='*70}", flush=True)
+    print(f"\n=== {name} ===", flush=True)
     if subsample_n:
         X_use, y_use = stratified_subsample(X_tr, y_tr, subsample_n)
         print(f"Train subsample: {len(X_use):,} rows (full train was {len(X_tr):,})", flush=True)
@@ -182,7 +182,7 @@ def train_ensemble(X_tr, y_tr, X_te, y_te):
     if not (rf_path.exists() and mlp_path.exists()):
         print("Skipping ensemble: random_forest.pkl and mlp.pkl must both exist first.")
         return None, None
-    print(f"\n{'='*70}\nensemble_rf_mlp\n{'='*70}")
+    print("\n=== ensemble_rf_mlp ===")
 
     rf_pipe = joblib.load(rf_path)
     mlp_pipe = joblib.load(mlp_path)
@@ -229,8 +229,6 @@ def train_ensemble(X_tr, y_tr, X_te, y_te):
         },
     }
 
-
-# -- Driver ----------------------------------------------------------------------------
 
 def already_done(name):
     return (RUNS_DIR / f"{name}.pkl").exists() and (RUNS_DIR / f"{name}_metrics.json").exists()

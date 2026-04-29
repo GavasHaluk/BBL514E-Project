@@ -52,9 +52,14 @@ def proposal_check(runs):
         m = r["test_metrics"]
         acc_ok = m["accuracy"] > 0.90
         fpr_ok = m["fpr"] < 0.05
-        flags = "✅" if (acc_ok and fpr_ok) else ("⚠️ " if (acc_ok or fpr_ok) else "❌")
+        if acc_ok and fpr_ok:
+            tag = "PASS"
+        elif acc_ok or fpr_ok:
+            tag = "PARTIAL"
+        else:
+            tag = "FAIL"
         lines.append(
-            f"- {flags} **{r['name']}** "
+            f"- [{tag}] **{r['name']}** "
             f"acc {fmt_pct(m['accuracy'])}% (need >90), "
             f"FPR {fmt_pct(m['fpr'])}% (need <5)"
         )
@@ -64,12 +69,10 @@ def proposal_check(runs):
     if ensemble and singles:
         best_single_f1 = max(r["test_metrics"]["f1"] for r in singles)
         ens_f1 = ensemble["test_metrics"]["f1"]
-        ok = ens_f1 >= best_single_f1
+        verb = "beats" if ens_f1 >= best_single_f1 else "loses to"
         lines.append(
-            f"\n- {'✅' if ok else '❌'} Ensemble vs singles: "
-            f"ensemble F1 = {fmt_pct(ens_f1)}%, "
-            f"best single F1 = {fmt_pct(best_single_f1)}% "
-            f"({'beats' if ok else 'loses to'} best single)"
+            f"\n- Ensemble vs singles: ensemble F1 = {fmt_pct(ens_f1)}%, "
+            f"best single F1 = {fmt_pct(best_single_f1)}% ({verb} best single)"
         )
     return "\n".join(lines)
 

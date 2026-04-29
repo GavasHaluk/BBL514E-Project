@@ -57,17 +57,17 @@ def get_schema():
 
 def _parse_csv(raw: bytes) -> pd.DataFrame:
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"File too large ({len(raw)} bytes). Limit is {MAX_UPLOAD_BYTES} bytes (25 MB).")
+        raise HTTPException(413, f"file too large: {len(raw)} bytes (limit {MAX_UPLOAD_BYTES})")
     if not raw:
-        raise HTTPException(400, "Uploaded file is empty.")
+        raise HTTPException(400, "empty upload")
     try:
         df = pd.read_csv(io.BytesIO(raw))
     except Exception as e:
-        raise HTTPException(400, f"Could not parse CSV: {e}")
+        raise HTTPException(400, f"bad csv: {e}")
     df = schema.normalize_columns(df)
     missing = schema.missing_columns(df)
     if missing:
-        raise HTTPException(422, {"message": "Missing required feature columns.", "missing": missing})
+        raise HTTPException(422, {"message": "missing feature columns", "missing": missing})
     return df
 
 
