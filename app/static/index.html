@@ -20,6 +20,10 @@
       <h2>Upload a flow CSV</h2>
       <p>CICIDS2017-style features (78 columns). Optional <code>Label</code> column enables metrics. Limit 25 MB.</p>
       <form id="upload-form">
+        <div class="model-row">
+          <label for="model-select">Model</label>
+          <select id="model-select"><option value="">loading…</option></select>
+        </div>
         <label class="dropzone" id="dropzone">
           <input type="file" id="file-input" accept=".csv" />
           <span id="file-label">Choose a .csv file or drop it here</span>

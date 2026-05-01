@@ -13,6 +13,7 @@ const spinner = $("spinner");
 const results = $("results");
 const metricsCard = $("metrics-card");
 const rowsCap = $("rows-cap");
+const modelSelect = $("model-select");
 
 let pickedFile = null;
 let lastRows = [];
@@ -32,11 +33,36 @@ themeBtn.addEventListener("click", () => {
 fetch("/api/health")
   .then((r) => r.json())
   .then((j) => {
+    if (j.status === "no_models") {
+      $("predictor-tag").textContent = "no models loaded";
+      return;
+    }
     const p = j.predictor;
     const date = p.trained_at ? ` · ${p.trained_at}` : "";
     $("predictor-tag").textContent = `${p.name} v${p.version}${date}`;
   })
   .catch(() => ($("predictor-tag").textContent = "unreachable"));
+
+fetch("/api/models")
+  .then((r) => r.json())
+  .then((j) => {
+    modelSelect.innerHTML = "";
+    if (!j.models || j.models.length === 0) {
+      modelSelect.innerHTML = '<option value="">(no models found)</option>';
+      modelSelect.disabled = true;
+      return;
+    }
+    for (const m of j.models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label;
+      if (m.id === j.default_id) opt.selected = true;
+      modelSelect.appendChild(opt);
+    }
+  })
+  .catch(() => {
+    modelSelect.innerHTML = '<option value="">(model list unavailable)</option>';
+  });
 
 fileInput.addEventListener("change", (e) => setFile(e.target.files[0]));
 
@@ -76,6 +102,7 @@ $("upload-form").addEventListener("submit", async (e) => {
   await runPrediction(() => {
     const fd = new FormData();
     fd.append("file", pickedFile);
+    if (modelSelect.value) fd.append("model_id", modelSelect.value);
     return fetch("/api/predict", { method: "POST", body: fd });
   });
 });
@@ -85,7 +112,8 @@ sampleBtn.addEventListener("click", async () => {
   fileInput.value = "";
   fileLabel.textContent = "Choose a .csv file or drop it here";
   submitBtn.disabled = true;
-  await runPrediction(() => fetch("/api/sample"));
+  const qs = modelSelect.value ? `?model_id=${encodeURIComponent(modelSelect.value)}` : "";
+  await runPrediction(() => fetch("/api/sample" + qs));
 });
 
 downloadBtn.addEventListener("click", async () => {
@@ -97,9 +125,11 @@ downloadBtn.addEventListener("click", async () => {
     if (pickedFile) {
       const fd = new FormData();
       fd.append("file", pickedFile);
+      if (modelSelect.value) fd.append("model_id", modelSelect.value);
       res = await fetch("/api/predict.csv", { method: "POST", body: fd });
     } else {
-      const sample = await fetch("/api/sample").then((r) => r.json());
+      const qs = modelSelect.value ? `?model_id=${encodeURIComponent(modelSelect.value)}` : "";
+      const sample = await fetch("/api/sample" + qs).then((r) => r.json());
       const blob = buildCsvFromPreview(sample);
       triggerDownload(blob, "predictions_sample.csv");
       setStatus("Sample predictions downloaded (preview rows only).", "info");
@@ -166,7 +196,8 @@ async function runPrediction(fetcher) {
     }
     const data = await res.json();
     render(data);
-    setStatus(`${data.n_rows.toLocaleString()} rows scored.`, "info");
+    const n = Number(data.n_rows) || 0;
+    setStatus(`${n.toLocaleString()} rows scored.`, "info");
     downloadBtn.disabled = false;
     downloadBtn.dataset.source = data.source || "";
   } catch (err) {
@@ -212,7 +243,7 @@ function renderMetrics(m) {
   const pct = (x) => (x * 100).toFixed(2) + "%";
   $("m-acc").textContent = pct(m.accuracy);
   $("m-f1").textContent = pct(m.f1);
-  $("m-auc").textContent = m.auc == null ? "n/a" : formatAuc(m.auc);
+  $("m-auc").textContent = (m.auc == null || Number.isNaN(m.auc)) ? "n/a" : formatAuc(m.auc);
   $("m-prec").textContent = pct(m.precision);
   $("m-rec").textContent = pct(m.recall);
 

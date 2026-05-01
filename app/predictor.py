@@ -1,7 +1,4 @@
 import logging
-import os
-from datetime import date
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,47 +10,31 @@ MALICIOUS = "Malicious"
 DECISION_THRESHOLD = 0.5
 
 
-class MockPredictor:
-    name = "mock-rule-v1"
-    version = "1.0"
-    trained_at = str(date.today())
-
-    def predict(self, X: pd.DataFrame):
-        port = pd.to_numeric(X["Destination Port"], errors="coerce").fillna(-1).to_numpy()
-        fwd_bytes = pd.to_numeric(X["Total Length of Fwd Packets"], errors="coerce").fillna(0).to_numpy()
-
-        web_port = (port == 80) | (port == 443)
-        small_fwd = fwd_bytes < 50
-
-        proba = 0.1 + 0.4 * web_port.astype(float) + 0.4 * small_fwd.astype(float)
-        proba = np.clip(proba, 0.05, 0.95)
-
-        labels = np.where(proba >= DECISION_THRESHOLD, MALICIOUS, BENIGN)
-        return labels, proba
-
-
 class SklearnPredictor:
     name = "sklearn"
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path):
         import joblib
         self.model = joblib.load(model_path)
         self.version = getattr(self.model, "version", "unknown")
         self.trained_at = getattr(self.model, "trained_at", None)
 
-    def predict(self, X: pd.DataFrame):
+        # subset/reorder X if the model only knows a column subset
+        feats = getattr(self.model, "feature_names_in_", None)
+        self.feature_names = list(feats) if feats is not None else None
+
+        # partner's joblibs use 0/1, ours use Benign/Malicious
         classes = list(self.model.classes_)
-        mal_idx = classes.index(MALICIOUS)
-        proba = self.model.predict_proba(X)[:, mal_idx]
+        if MALICIOUS in classes:
+            self._mal_idx = classes.index(MALICIOUS)
+        elif 1 in classes:
+            self._mal_idx = classes.index(1)
+        else:
+            raise ValueError(f"unrecognised classes_: {classes}")
+
+    def predict(self, X: pd.DataFrame):
+        if self.feature_names is not None:
+            X = X[self.feature_names]
+        proba = self.model.predict_proba(X)[:, self._mal_idx]
         labels = np.where(proba >= DECISION_THRESHOLD, MALICIOUS, BENIGN)
         return labels, proba
-
-
-def get_predictor():
-    path = os.getenv("MODEL_PATH")
-    if not path:
-        log.warning("MODEL_PATH not set; falling back to MockPredictor.")
-        return MockPredictor()
-    if not Path(path).exists():
-        raise FileNotFoundError(f"MODEL_PATH={path}")
-    return SklearnPredictor(path)

@@ -1,5 +1,4 @@
-"""Custom transformers used inside the trained pipeline. Imported by the
-container at startup when unpickling models/model.pkl."""
+"""Custom transformers (needed at unpickle time)."""
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 
