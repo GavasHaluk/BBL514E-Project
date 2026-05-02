@@ -4,16 +4,16 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import metrics, schema
-from app.predictor import MALICIOUS, get_predictor
+from app import metrics, registry, schema
+from app.predictor import MALICIOUS
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 ROW_PREVIEW_CAP = 10_000
-DATASET_MALICIOUS_BASELINE_PCT = 17.0  # CICIDS2017 class prior
+DATASET_MALICIOUS_BASELINE_PCT = 17.0
 ROW_EXTRA_FEATURES = [
     "Destination Port",
     "Flow Duration",
@@ -26,10 +26,8 @@ ROW_EXTRA_FEATURES = [
 STATIC_DIR = Path(__file__).parent / "static"
 SAMPLE_CSV = Path(__file__).parent / "bundled" / "demo_sample.csv"
 
-app = FastAPI(title="CICIDS2017 Intrusion Detection", version="0.2.0")
+app = FastAPI(title="CICIDS2017 Intrusion Detection", version="0.3.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-predictor = get_predictor()
 
 
 @app.get("/", include_in_schema=False)
@@ -37,17 +35,45 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+def _resolve(model_id):
+    try:
+        return registry.get(model_id)
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"failed to load model {model_id!r}: {e}")
+
+
 @app.get("/api/health")
 def health():
+    items = registry.listing()
+    if not items:
+        return {
+            "status": "no_models",
+            "n_models": 0,
+            "models_dir": str(registry.MODELS_DIR),
+            "hint": "drop a .pkl/.joblib into models/ (or run scripts/setup_demo_models.sh)",
+        }
+    pred = _resolve(None)
     return {
         "status": "ok",
         "predictor": {
-            "name": predictor.name,
-            "version": getattr(predictor, "version", "unknown"),
-            "trained_at": getattr(predictor, "trained_at", None),
+            "name": pred.name,
+            "version": getattr(pred, "version", "unknown"),
+            "trained_at": getattr(pred, "trained_at", None),
         },
+        "default_model_id": registry.default_id(),
+        "n_models": len(items),
         "baseline_malicious_pct": DATASET_MALICIOUS_BASELINE_PCT,
     }
+
+
+@app.get("/api/models")
+def list_models():
+    items = [{"id": it["id"], "label": it["label"]} for it in registry.listing()]
+    return {"models": items, "default_id": registry.default_id()}
 
 
 @app.get("/api/schema")
@@ -55,11 +81,11 @@ def get_schema():
     return {"features": schema.EXPECTED_FEATURES, "label_column": schema.LABEL_COLUMN}
 
 
-def _parse_csv(raw: bytes) -> pd.DataFrame:
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"file too large: {len(raw)} bytes (limit {MAX_UPLOAD_BYTES})")
+def _parse_csv(raw):
     if not raw:
         raise HTTPException(400, "empty upload")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"file too large: {len(raw)} bytes (limit {MAX_UPLOAD_BYTES})")
     try:
         df = pd.read_csv(io.BytesIO(raw))
     except Exception as e:
@@ -71,15 +97,15 @@ def _parse_csv(raw: bytes) -> pd.DataFrame:
     return df
 
 
-def _score(df: pd.DataFrame):
-    y_true_raw = df.pop(schema.LABEL_COLUMN).to_numpy() if schema.LABEL_COLUMN in df.columns else None
+def _score(predictor, df):
+    y_true = df.pop(schema.LABEL_COLUMN).to_numpy() if schema.LABEL_COLUMN in df.columns else None
     extras = {c: df[c].to_numpy() for c in ROW_EXTRA_FEATURES if c in df.columns}
     X = df[schema.EXPECTED_FEATURES].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     labels, proba_mal = predictor.predict(X)
-    return labels, proba_mal, y_true_raw, extras
+    return labels, proba_mal, y_true, extras
 
 
-def _build_payload(labels, proba_mal, y_true_raw, extras) -> dict:
+def _build_payload(predictor, model_id, labels, proba_mal, y_true_raw, extras):
     n = int(len(labels))
     n_mal = int((labels == MALICIOUS).sum())
     result_metrics = None
@@ -105,7 +131,11 @@ def _build_payload(labels, proba_mal, y_true_raw, extras) -> dict:
         rows.append(row)
 
     return {
-        "predictor": {"name": predictor.name, "version": getattr(predictor, "version", "unknown")},
+        "predictor": {
+            "name": predictor.name,
+            "version": getattr(predictor, "version", "unknown"),
+            "model_id": model_id,
+        },
         "n_rows": n,
         "summary": {
             "benign": n - n_mal,
@@ -121,16 +151,19 @@ def _build_payload(labels, proba_mal, y_true_raw, extras) -> dict:
 
 
 @app.post("/api/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...), model_id: str | None = Form(None)):
+    pred = _resolve(model_id)
     df = _parse_csv(await file.read())
-    labels, proba_mal, y_true_raw, extras = _score(df)
-    return JSONResponse(_build_payload(labels, proba_mal, y_true_raw, extras))
+    labels, proba_mal, y_true_raw, extras = _score(pred, df)
+    return JSONResponse(_build_payload(pred, model_id or registry.default_id(),
+                                       labels, proba_mal, y_true_raw, extras))
 
 
 @app.post("/api/predict.csv")
-async def predict_csv(file: UploadFile = File(...)):
+async def predict_csv(file: UploadFile = File(...), model_id: str | None = Form(None)):
+    pred = _resolve(model_id)
     df = _parse_csv(await file.read())
-    labels, proba_mal, y_true_raw, _ = _score(df)
+    labels, proba_mal, y_true_raw, _ = _score(pred, df)
 
     def stream():
         buf = io.StringIO()
@@ -159,11 +192,13 @@ async def predict_csv(file: UploadFile = File(...)):
 
 
 @app.get("/api/sample")
-def sample():
+def sample(model_id: str | None = None):
+    pred = _resolve(model_id)
     if not SAMPLE_CSV.exists():
         raise HTTPException(503, "No bundled sample available in this image.")
     df = _parse_csv(SAMPLE_CSV.read_bytes())
-    labels, proba_mal, y_true_raw, extras = _score(df)
-    payload = _build_payload(labels, proba_mal, y_true_raw, extras)
+    labels, proba_mal, y_true_raw, extras = _score(pred, df)
+    payload = _build_payload(pred, model_id or registry.default_id(),
+                             labels, proba_mal, y_true_raw, extras)
     payload["source"] = SAMPLE_CSV.name
     return JSONResponse(payload)

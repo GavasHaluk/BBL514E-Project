@@ -8,5 +8,5 @@ services:
     volumes:
       - ./models:/app/models:ro
     environment:
-      - MODEL_PATH=/app/models/model.pkl
+      - MODEL_PATH=${MODEL_PATH:-/app/models/model.pkl}
     restart: unless-stopped

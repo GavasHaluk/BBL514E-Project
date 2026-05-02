@@ -23,11 +23,11 @@ def load_runs():
 
 
 def fmt_pct(x):
-    return f"{x*100:.2f}" if x is not None else "—"
+    return f"{x*100:.2f}" if x is not None else "n/a"
 
 
 def fmt_num(x, digits=4):
-    return f"{x:.{digits}f}" if x is not None else "—"
+    return f"{x:.{digits}f}" if x is not None else "n/a"
 
 
 def build_table(runs):

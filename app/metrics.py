@@ -35,13 +35,13 @@ def compute(y_true: np.ndarray, y_pred: np.ndarray, proba_mal: np.ndarray) -> di
         "auc": None,
     }
 
-    if y_bin.min() != y_bin.max():
-        auc = float(roc_auc_score(y_bin, proba_mal))
+    # roc_auc_score throws if there's only one class present
+    if len(np.unique(y_bin)) == 2:
+        result["auc"] = float(roc_auc_score(y_bin, proba_mal))
         fpr, tpr, _ = roc_curve(y_bin, proba_mal)
         if len(fpr) > ROC_MAX_POINTS:
             idx = np.linspace(0, len(fpr) - 1, ROC_MAX_POINTS).astype(int)
             fpr, tpr = fpr[idx], tpr[idx]
-        result["auc"] = auc
         result["roc"] = {"fpr": fpr.tolist(), "tpr": tpr.tolist()}
 
     return result
