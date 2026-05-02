@@ -210,8 +210,4 @@ __marimo__/
 # BBL514E project artifacts
 data/
 samples/*.csv
-models/**/*.pkl
-models/**/*.joblib
-models/**/*.keras
-models/figures/
 *.DS_Store
