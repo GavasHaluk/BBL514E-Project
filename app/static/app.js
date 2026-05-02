@@ -14,9 +14,18 @@ const results = $("results");
 const metricsCard = $("metrics-card");
 const rowsCap = $("rows-cap");
 const modelSelect = $("model-select");
+const sampleSelect = $("sample-select");
+const compareBtn = $("compare-btn");
+const compareCard = $("compare-results");
+const compareSource = $("compare-source");
+
+const DEFAULT_THRESHOLD = 0.5;
 
 let pickedFile = null;
 let lastRows = [];
+let lastMetrics = null;
+let lastTotals = null; // {nBenign, nMal, total} cached from server-side CM
+let threshold = DEFAULT_THRESHOLD;
 let sort = null;
 let page = 1;
 let pageSize = 100;
@@ -59,12 +68,38 @@ fetch("/api/models")
       if (m.id === j.default_id) opt.selected = true;
       modelSelect.appendChild(opt);
     }
+    refreshCompareEnabled();
   })
   .catch(() => {
     modelSelect.innerHTML = '<option value="">(model list unavailable)</option>';
   });
 
+fetch("/api/samples")
+  .then((r) => r.json())
+  .then((j) => {
+    sampleSelect.innerHTML = "";
+    if (!j.samples || j.samples.length === 0) {
+      sampleSelect.innerHTML = '<option value="">(none bundled)</option>';
+      sampleSelect.disabled = true;
+      sampleBtn.disabled = true;
+      return;
+    }
+    for (const s of j.samples) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.label;
+      if (s.id === j.default_id) opt.selected = true;
+      sampleSelect.appendChild(opt);
+    }
+    refreshCompareEnabled();
+  })
+  .catch(() => {
+    sampleSelect.innerHTML = '<option value="">(unavailable)</option>';
+    sampleSelect.disabled = true;
+  });
+
 fileInput.addEventListener("change", (e) => setFile(e.target.files[0]));
+sampleSelect.addEventListener("change", refreshCompareEnabled);
 
 ["dragover", "dragenter"].forEach((ev) =>
   dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add("drag"); })
@@ -81,6 +116,7 @@ function setFile(f) {
   if (!pickedFile) {
     fileLabel.textContent = "Choose a .csv file or drop it here";
     submitBtn.disabled = true;
+    refreshCompareEnabled();
     return;
   }
   if (!pickedFile.name.toLowerCase().endsWith(".csv")) {
@@ -89,11 +125,20 @@ function setFile(f) {
     submitBtn.disabled = true;
     fileLabel.textContent = "Choose a .csv file or drop it here";
     fileInput.value = "";
+    refreshCompareEnabled();
     return;
   }
   fileLabel.textContent = `${pickedFile.name} (${(pickedFile.size / 1024 / 1024).toFixed(2)} MB)`;
   submitBtn.disabled = false;
+  refreshCompareEnabled();
   setStatus("", "");
+}
+
+function refreshCompareEnabled() {
+  // Compare needs either an upload or at least one bundled sample to score.
+  const haveSample = sampleSelect && sampleSelect.value && !sampleSelect.disabled;
+  const haveModels = modelSelect && modelSelect.options.length > 0 && !modelSelect.disabled;
+  compareBtn.disabled = !haveModels || (!pickedFile && !haveSample);
 }
 
 $("upload-form").addEventListener("submit", async (e) => {
@@ -112,9 +157,103 @@ sampleBtn.addEventListener("click", async () => {
   fileInput.value = "";
   fileLabel.textContent = "Choose a .csv file or drop it here";
   submitBtn.disabled = true;
-  const qs = modelSelect.value ? `?model_id=${encodeURIComponent(modelSelect.value)}` : "";
-  await runPrediction(() => fetch("/api/sample" + qs));
+  const params = new URLSearchParams();
+  if (modelSelect.value) params.set("model_id", modelSelect.value);
+  if (sampleSelect.value) params.set("sample_id", sampleSelect.value);
+  const qs = params.toString();
+  await runPrediction(() => fetch("/api/sample" + (qs ? `?${qs}` : "")));
 });
+
+compareBtn.addEventListener("click", async () => {
+  const ids = [...modelSelect.options].map((o) => o.value).filter(Boolean);
+  if (!ids.length) return;
+  compareBtn.disabled = true;
+  submitBtn.disabled = true;
+  sampleBtn.disabled = true;
+  setStatus("Scoring all models…", "info", true);
+  try {
+    const fd = new FormData();
+    fd.append("model_ids", ids.join(","));
+    if (pickedFile) {
+      fd.append("file", pickedFile);
+    } else if (sampleSelect.value) {
+      fd.append("sample_id", sampleSelect.value);
+    } else {
+      throw new Error("pick a file or a bundled sample first");
+    }
+    const res = await fetch("/api/predict_compare", { method: "POST", body: fd });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(typeof err.detail === "string" ? err.detail : JSON.stringify(err.detail));
+    }
+    const data = await res.json();
+    renderCompare(data);
+    setStatus(`${data.results.length} models scored on ${data.source}.`, "info");
+  } catch (err) {
+    setStatus(`Compare failed: ${err.message}`, "error");
+    compareCard.classList.add("hidden");
+  } finally {
+    refreshCompareEnabled();
+    submitBtn.disabled = !pickedFile;
+    sampleBtn.disabled = false;
+  }
+});
+
+function renderCompare(data) {
+  compareCard.classList.remove("hidden");
+  compareSource.textContent = data.source ? `input: ${data.source}` : "";
+  const tbody = compareCard.querySelector("tbody");
+  tbody.innerHTML = "";
+
+  const haveTruth = data.results.some((r) => r.metrics);
+  $("compare-no-truth-note").style.display = haveTruth ? "none" : "";
+
+  // Highlight best F1 (or, when truth is absent, lowest %malicious -- the
+  // "least alarmist" model) so the eye lands somewhere sensible.
+  let bestIdx = -1;
+  if (haveTruth) {
+    let bestF1 = -1;
+    data.results.forEach((r, i) => {
+      const f1 = r.metrics?.f1;
+      if (f1 != null && f1 > bestF1) { bestF1 = f1; bestIdx = i; }
+    });
+  }
+
+  data.results.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (r.error) {
+      tr.classList.add("errored");
+      tr.innerHTML = `<td>${escapeHtml(r.model_id)}</td><td colspan="7">error: ${escapeHtml(r.error)}</td>`;
+      tbody.appendChild(tr);
+      return;
+    }
+    if (i === bestIdx) tr.classList.add("best");
+    const m = r.metrics;
+    const cm = m?.confusion_matrix;
+    const fpr = cm ? cm.fp / Math.max(1, cm.fp + cm.tn) : null;
+    const cells = [
+      escapeHtml(r.model_id),
+      m ? (m.accuracy * 100).toFixed(2) + "%" : "—",
+      m ? (m.precision * 100).toFixed(2) + "%" : "—",
+      m ? (m.recall * 100).toFixed(2) + "%" : "—",
+      m ? (m.f1 * 100).toFixed(2) + "%" : "—",
+      fpr != null ? (fpr * 100).toFixed(2) + "%" : "—",
+      m && m.auc != null ? formatAuc(m.auc) : "—",
+      `${r.n_malicious.toLocaleString()} / ${r.n_rows.toLocaleString()}`,
+    ];
+    tr.innerHTML = `
+      <td>${cells[0]}</td>
+      <td class="num">${cells[1]}</td>
+      <td class="num">${cells[2]}</td>
+      <td class="num">${cells[3]}</td>
+      <td class="num">${cells[4]}</td>
+      <td class="num">${cells[5]}</td>
+      <td class="num">${cells[6]}</td>
+      <td class="num">${cells[7]}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
 
 downloadBtn.addEventListener("click", async () => {
   if (!pickedFile && !downloadBtn.dataset.source) return;
@@ -128,8 +267,11 @@ downloadBtn.addEventListener("click", async () => {
       if (modelSelect.value) fd.append("model_id", modelSelect.value);
       res = await fetch("/api/predict.csv", { method: "POST", body: fd });
     } else {
-      const qs = modelSelect.value ? `?model_id=${encodeURIComponent(modelSelect.value)}` : "";
-      const sample = await fetch("/api/sample" + qs).then((r) => r.json());
+      const params = new URLSearchParams();
+      if (modelSelect.value) params.set("model_id", modelSelect.value);
+      if (sampleSelect.value) params.set("sample_id", sampleSelect.value);
+      const qs = params.toString();
+      const sample = await fetch("/api/sample" + (qs ? `?${qs}` : "")).then((r) => r.json());
       const blob = buildCsvFromPreview(sample);
       triggerDownload(blob, "predictions_sample.csv");
       setStatus("Sample predictions downloaded (preview rows only).", "info");
@@ -148,6 +290,20 @@ downloadBtn.addEventListener("click", async () => {
 });
 
 malOnly.addEventListener("change", () => { page = 1; renderRows(); });
+
+const thrSlider = $("thr-slider");
+const thrValue = $("thr-value");
+const thrDefault = $("thr-default");
+const thrReset = $("thr-reset");
+thrSlider.addEventListener("input", (e) => {
+  threshold = parseFloat(e.target.value);
+  applyThreshold();
+});
+thrReset.addEventListener("click", () => {
+  threshold = DEFAULT_THRESHOLD;
+  thrSlider.value = String(DEFAULT_THRESHOLD);
+  applyThreshold();
+});
 
 $("page-first").addEventListener("click", () => { page = 1; renderRows(); });
 $("page-prev").addEventListener("click", () => { page = Math.max(1, page - 1); renderRows(); });
@@ -224,51 +380,36 @@ function render(d) {
   $("s-pct").textContent = d.summary.malicious_pct + "%";
   $("s-baseline").textContent = `dataset baseline ~${d.summary.baseline_malicious_pct}%`;
 
-  if (d.metrics) {
-    metricsCard.classList.remove("hidden");
-    renderMetrics(d.metrics);
-  } else {
-    metricsCard.classList.add("hidden");
-  }
-
   lastRows = d.rows;
   page = 1;
   rowsCap.textContent = d.rows_truncated
     ? `(first ${d.rows.length.toLocaleString()} of ${d.n_rows.toLocaleString()})`
     : `(${d.rows.length.toLocaleString()} rows)`;
-  renderRows();
+
+  lastMetrics = d.metrics || null;
+  lastTotals = null;
+  if (lastMetrics) {
+    const cm = lastMetrics.confusion_matrix;
+    lastTotals = {
+      nBenign: cm.tn + cm.fp,
+      nMal: cm.fn + cm.tp,
+      total: cm.tn + cm.fp + cm.fn + cm.tp,
+    };
+    metricsCard.classList.remove("hidden");
+    threshold = DEFAULT_THRESHOLD;
+    thrSlider.value = String(DEFAULT_THRESHOLD);
+    renderRocStatic(lastMetrics);
+    renderPerAttack(lastMetrics.per_attack);
+    applyThreshold(); // also renders rows
+  } else {
+    metricsCard.classList.add("hidden");
+    renderRows();
+  }
 }
 
-function renderMetrics(m) {
-  const pct = (x) => (x * 100).toFixed(2) + "%";
-  $("m-acc").textContent = pct(m.accuracy);
-  $("m-f1").textContent = pct(m.f1);
-  $("m-auc").textContent = (m.auc == null || Number.isNaN(m.auc)) ? "n/a" : formatAuc(m.auc);
-  $("m-prec").textContent = pct(m.precision);
-  $("m-rec").textContent = pct(m.recall);
-
-  const cm = m.confusion_matrix;
-  const total = cm.tn + cm.fp + cm.fn + cm.tp;
-  const rowBen = cm.tn + cm.fp;
-  const rowMal = cm.fn + cm.tp;
-  const colBen = cm.tn + cm.fn;
-  const colMal = cm.fp + cm.tp;
-  const setCell = (n, v, denom) => {
-    $(n).textContent = v.toLocaleString();
-    const el = $(n + "-pct");
-    if (el) el.textContent = denom ? `${((v / denom) * 100).toFixed(1)}%` : "";
-  };
-  setCell("cm-tn", cm.tn, rowBen);
-  setCell("cm-fp", cm.fp, rowBen);
-  setCell("cm-fn", cm.fn, rowMal);
-  setCell("cm-tp", cm.tp, rowMal);
-  $("cm-row-ben").textContent = rowBen.toLocaleString();
-  $("cm-row-mal").textContent = rowMal.toLocaleString();
-  $("cm-col-ben").textContent = colBen.toLocaleString();
-  $("cm-col-mal").textContent = colMal.toLocaleString();
-  $("cm-col-all").textContent = total.toLocaleString();
-
+function renderRocStatic(m) {
   const curve = $("roc-curve");
+  const aucText = $("roc-auc-text");
   if (m.roc && m.roc.fpr.length) {
     const pts = m.roc.fpr.map((f, i) => `${(f * 100).toFixed(2)},${((1 - m.roc.tpr[i]) * 100).toFixed(2)}`).join(" ");
     curve.setAttribute("points", pts);
@@ -277,10 +418,116 @@ function renderMetrics(m) {
     curve.setAttribute("points", "");
     curve.style.display = "none";
   }
+  aucText.textContent = (m.auc == null || Number.isNaN(m.auc)) ? "" : `AUC = ${formatAuc(m.auc)}`;
+}
+
+// Find the ROC sample whose threshold is closest to t, fall back to nearest
+// (fpr, tpr) bracket. roc_curve in sklearn yields thresholds in DESCENDING
+// order, so a binary scan would be overkill -- linear is fine for ~120 pts.
+function rocCellAt(m, t) {
+  if (!m.roc || !m.roc.fpr.length) return null;
+  const { fpr, tpr, thr } = m.roc;
+  let best = 0;
+  let bestDelta = Infinity;
+  for (let i = 0; i < thr.length; i++) {
+    const d = Math.abs(thr[i] - t);
+    if (d < bestDelta) { bestDelta = d; best = i; }
+  }
+  return { fpr: fpr[best], tpr: tpr[best], thr: thr[best] };
+}
+
+function applyThreshold() {
+  thrValue.textContent = threshold.toFixed(2);
+  thrDefault.classList.toggle("hidden", Math.abs(threshold - DEFAULT_THRESHOLD) > 1e-9);
+
+  if (lastMetrics && lastTotals) {
+    const cell = rocCellAt(lastMetrics, threshold) || { fpr: 0, tpr: 0 };
+    // tpr/fpr are rates over the *full* dataset; convert back to counts.
+    const tp = Math.round(cell.tpr * lastTotals.nMal);
+    const fn = lastTotals.nMal - tp;
+    const fp = Math.round(cell.fpr * lastTotals.nBenign);
+    const tn = lastTotals.nBenign - fp;
+    const acc = lastTotals.total ? (tp + tn) / lastTotals.total : 0;
+    const prec = (tp + fp) ? tp / (tp + fp) : 0;
+    const rec = lastTotals.nMal ? tp / lastTotals.nMal : 0;
+    const f1 = (prec + rec) ? (2 * prec * rec) / (prec + rec) : 0;
+
+    const pct = (x) => (x * 100).toFixed(2) + "%";
+    $("m-acc").textContent = pct(acc);
+    $("m-f1").textContent = pct(f1);
+    $("m-auc").textContent = (lastMetrics.auc == null || Number.isNaN(lastMetrics.auc))
+      ? "n/a" : formatAuc(lastMetrics.auc);
+    $("m-prec").textContent = pct(prec);
+    $("m-rec").textContent = pct(rec);
+
+    const rowBen = tn + fp;
+    const rowMal = fn + tp;
+    const colBen = tn + fn;
+    const colMal = fp + tp;
+    const setCell = (n, v, denom) => {
+      $(n).textContent = v.toLocaleString();
+      const el = $(n + "-pct");
+      if (el) el.textContent = denom ? `${((v / denom) * 100).toFixed(1)}%` : "";
+    };
+    setCell("cm-tn", tn, rowBen);
+    setCell("cm-fp", fp, rowBen);
+    setCell("cm-fn", fn, rowMal);
+    setCell("cm-tp", tp, rowMal);
+    $("cm-row-ben").textContent = rowBen.toLocaleString();
+    $("cm-row-mal").textContent = rowMal.toLocaleString();
+    $("cm-col-ben").textContent = colBen.toLocaleString();
+    $("cm-col-mal").textContent = colMal.toLocaleString();
+    $("cm-col-all").textContent = lastTotals.total.toLocaleString();
+
+    // Move the dot on the ROC. Coords match the polyline's coordinate space.
+    const dot = $("roc-dot");
+    dot.setAttribute("cx", String(cell.fpr * 100));
+    dot.setAttribute("cy", String((1 - cell.tpr) * 100));
+  }
+
+  renderRows();
+}
+
+function renderPerAttack(rows) {
+  const wrap = $("per-attack-wrap");
+  const body = $("per-attack-body");
+  if (!rows || !rows.length) {
+    wrap.classList.add("hidden");
+    body.innerHTML = "";
+    return;
+  }
+  wrap.classList.remove("hidden");
+  body.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    if (r.recall < 0.8) tr.classList.add("weak");
+    tr.innerHTML = `
+      <td>${escapeHtml(r.label)}</td>
+      <td class="num">${r.support.toLocaleString()}</td>
+      <td class="num">${r.tp.toLocaleString()}</td>
+      <td class="num">${r.fn.toLocaleString()}</td>
+      <td class="num">${(r.recall * 100).toFixed(1)}%</td>
+    `;
+    body.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function predLabel(r) {
+  // Use the live threshold so the rows table tracks the slider too. The
+  // server-side `predicted` field is left intact -- it's the 0.5 baseline.
+  return r.proba_malicious >= threshold ? "Malicious" : "Benign";
 }
 
 function renderRows() {
-  let rows = malOnly.checked ? lastRows.filter((r) => r.predicted === "Malicious") : lastRows.slice();
+  let rows = malOnly.checked
+    ? lastRows.filter((r) => predLabel(r) === "Malicious")
+    : lastRows.slice();
   if (sort) {
     const mul = sort.dir === "asc" ? 1 : -1;
     const isNum = sort.type === "num";
@@ -319,11 +566,12 @@ function renderRows() {
   tbody.innerHTML = "";
   for (const r of pageRows) {
     const p = (r.proba_malicious * 100).toFixed(1);
-    const cls = r.predicted === "Malicious" ? "malicious" : "benign";
+    const label = predLabel(r);
+    const cls = label === "Malicious" ? "malicious" : "benign";
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${r.row}</td>
-      <td><span class="badge ${cls}">${r.predicted}</span></td>
+      <td><span class="badge ${cls}">${label}</span></td>
       <td><span class="bar ${cls}"><span style="width:${p}%"></span></span>${p}%</td>
       <td>${fmtTrue(r.true)}</td>
       <td>${numOrDash(r["Destination Port"])}</td>

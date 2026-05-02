@@ -30,13 +30,44 @@
         </label>
         <div class="btn-row">
           <button id="submit-btn" type="submit" disabled>Predict</button>
-          <button id="sample-btn" type="button" class="ghost">Try bundled sample</button>
+          <button id="compare-btn" type="button" class="ghost" disabled>Compare all models</button>
+          <span class="sample-pick">
+            <select id="sample-select"><option value="">loading…</option></select>
+            <button id="sample-btn" type="button" class="ghost">Try sample</button>
+          </span>
         </div>
       </form>
       <div id="status" class="status">
         <span id="spinner" class="spinner hidden"></span>
         <span id="status-text"></span>
       </div>
+    </section>
+
+    <section id="compare-results" class="card hidden">
+      <div class="card-head">
+        <h3>Model comparison</h3>
+        <span id="compare-source" class="muted small"></span>
+      </div>
+      <div class="table-wrap compare-wrap">
+        <table id="compare-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Acc</th>
+              <th class="num">Prec</th>
+              <th class="num">Recall</th>
+              <th class="num">F1</th>
+              <th class="num">FPR</th>
+              <th class="num">AUC</th>
+              <th class="num">Pred Mal</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="compare-no-truth-note" style="display:none;">
+        No <code>Label</code> column in this input — only the predicted-malicious counts are populated.
+      </p>
     </section>
 
     <section id="results" class="results hidden">
@@ -63,6 +94,12 @@
           <div class="metric-box"><span class="k">Accuracy</span><span class="v" id="m-acc">—</span></div>
           <div class="metric-box"><span class="k">F1</span><span class="v" id="m-f1">—</span></div>
           <div class="metric-box"><span class="k">AUC</span><span class="v" id="m-auc">—</span></div>
+        </div>
+        <div class="threshold-row" id="threshold-row">
+          <label for="thr-slider">Decision threshold</label>
+          <input type="range" id="thr-slider" min="0" max="1" step="0.01" value="0.5" />
+          <span class="thr-readout"><span id="thr-value">0.50</span><span id="thr-default" class="muted small"> · default</span></span>
+          <button type="button" class="ghost small" id="thr-reset">Reset</button>
         </div>
         <div class="metrics-cols">
           <div>
@@ -117,11 +154,22 @@
               </g>
 
               <polyline id="roc-curve" points="" class="roc-line" />
+              <circle id="roc-dot" cx="-10" cy="-10" r="2" class="roc-dot" />
+              <text id="roc-auc-text" x="98" y="96" class="roc-label" text-anchor="end"></text>
 
               <text x="50" y="124" class="roc-label" text-anchor="middle">False Positive Rate</text>
               <text x="-18" y="50" class="roc-label" text-anchor="middle" transform="rotate(-90 -18 50)">True Positive Rate</text>
             </svg>
           </div>
+        </div>
+        <div id="per-attack-wrap" class="hidden">
+          <h4>Per-attack recall <span class="muted small">(at default 0.5)</span></h4>
+          <table class="per-attack">
+            <thead>
+              <tr><th>Attack</th><th class="num">Support</th><th class="num">Caught</th><th class="num">Missed</th><th class="num">Recall</th></tr>
+            </thead>
+            <tbody id="per-attack-body"></tbody>
+          </table>
         </div>
       </div>
 

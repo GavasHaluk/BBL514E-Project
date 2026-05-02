@@ -209,5 +209,4 @@ __marimo__/
 
 # BBL514E project artifacts
 data/
-samples/*.csv
 *.DS_Store

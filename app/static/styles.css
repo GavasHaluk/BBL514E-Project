@@ -140,7 +140,18 @@ button.ghost {
 }
 button.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 button.small { padding: 6px 12px; font-size: 0.82rem; }
-.btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+.sample-pick { display: inline-flex; gap: 6px; align-items: center; }
+.sample-pick select {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-family: inherit;
+  cursor: pointer;
+}
 #theme-toggle { padding: 6px 10px; font-size: 1rem; line-height: 1; }
 
 .status {
@@ -243,6 +254,36 @@ table th { background: var(--bg); font-weight: 500; color: var(--muted); }
 .roc-label { font-size: 6px; fill: var(--muted); }
 .roc-tick line { stroke: var(--muted); stroke-width: 0.5; }
 .roc-tick text { font-size: 5px; fill: var(--muted); }
+.roc-dot { fill: var(--accent); stroke: var(--card); stroke-width: 0.6; }
+#roc-auc-text { font-size: 6px; fill: var(--ink); }
+
+.threshold-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 18px;
+  font-size: 0.88rem;
+  flex-wrap: wrap;
+}
+.threshold-row label { color: var(--muted); }
+.threshold-row input[type="range"] {
+  flex: 1;
+  min-width: 180px;
+  accent-color: var(--accent);
+}
+.thr-readout { font-variant-numeric: tabular-nums; min-width: 70px; }
+#thr-default.hidden { display: none; }
+
+#per-attack-wrap { margin-top: 18px; }
+table.per-attack { font-size: 0.85rem; }
+table.per-attack th.num, table.per-attack td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.per-attack tr.weak td { color: var(--mal); }
+
+#compare-table { font-size: 0.88rem; }
+#compare-table th.num, #compare-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+#compare-table tr.best td { background: var(--good-cell); }
+#compare-table tr.errored td { color: var(--muted); }
+.compare-wrap { max-height: none; }
 
 .pagination { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
 .pagination button[disabled] { opacity: 0.4; cursor: not-allowed; }

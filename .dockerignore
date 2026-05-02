@@ -1,0 +1,14 @@
+# Keep the build context lean — only app/, requirements.txt and Dockerfile
+# are actually needed inside the image.
+.git
+.gitignore
+.venv
+.DS_Store
+__pycache__
+*.pyc
+
+# Heavy stuff that lives next to the repo but isn't part of the image
+data/
+models/
+README.md
+docker-compose.yml
