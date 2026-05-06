@@ -25,6 +25,10 @@ let pickedFile = null;
 let lastRows = [];
 let lastMetrics = null;
 let lastTotals = null; // {nBenign, nMal, total} cached from server-side CM
+let lastBaseline = null;
+let lastExtraCols = [];
+let lastSource = null;
+let openRow = null; // currently-expanded row number, or null
 let threshold = DEFAULT_THRESHOLD;
 let sort = null;
 let page = 1;
@@ -208,16 +212,44 @@ function renderCompare(data) {
   const haveTruth = data.results.some((r) => r.metrics);
   $("compare-no-truth-note").style.display = haveTruth ? "none" : "";
 
-  // Highlight best F1 (or, when truth is absent, lowest %malicious -- the
-  // "least alarmist" model) so the eye lands somewhere sensible.
-  let bestIdx = -1;
+  // Pull the comparable numbers per row first so we can compute the
+  // best-of-column up front. FPR is "lower is better"; everything else is
+  // "higher is better"; pred_mal is informational, not a quality metric,
+  // so we don't crown a winner there.
+  const stats = data.results.map((r) => {
+    if (r.error || !r.metrics) return null;
+    const cm = r.metrics.confusion_matrix;
+    return {
+      accuracy: r.metrics.accuracy,
+      precision: r.metrics.precision,
+      recall: r.metrics.recall,
+      f1: r.metrics.f1,
+      fpr: cm.fp / Math.max(1, cm.fp + cm.tn),
+      auc: r.metrics.auc,
+    };
+  });
+
+  const bestPerCol = {};
   if (haveTruth) {
-    let bestF1 = -1;
-    data.results.forEach((r, i) => {
-      const f1 = r.metrics?.f1;
-      if (f1 != null && f1 > bestF1) { bestF1 = f1; bestIdx = i; }
-    });
+    const cols = [
+      ["accuracy", "max"], ["precision", "max"], ["recall", "max"],
+      ["f1", "max"], ["fpr", "min"], ["auc", "max"],
+    ];
+    // Float compare with a small epsilon so tied winners both get the highlight
+    // (e.g. two models that round to the same percentage shouldn't fight over it).
+    const EPS = 1e-9;
+    for (const [col, dir] of cols) {
+      const vals = stats.map((s) => (s ? s[col] : null)).filter((v) => v != null);
+      if (!vals.length) continue;
+      bestPerCol[col] = dir === "max" ? Math.max(...vals) : Math.min(...vals);
+      bestPerCol[col + "_eps"] = EPS;
+    }
   }
+
+  const isBest = (col, val) => {
+    if (val == null || bestPerCol[col] == null) return false;
+    return Math.abs(val - bestPerCol[col]) <= bestPerCol[col + "_eps"];
+  };
 
   data.results.forEach((r, i) => {
     const tr = document.createElement("tr");
@@ -227,29 +259,18 @@ function renderCompare(data) {
       tbody.appendChild(tr);
       return;
     }
-    if (i === bestIdx) tr.classList.add("best");
+    const s = stats[i];
+    const cell = (col, text) => `<td class="num${isBest(col, s?.[col]) ? " best" : ""}">${text}</td>`;
     const m = r.metrics;
-    const cm = m?.confusion_matrix;
-    const fpr = cm ? cm.fp / Math.max(1, cm.fp + cm.tn) : null;
-    const cells = [
-      escapeHtml(r.model_id),
-      m ? (m.accuracy * 100).toFixed(2) + "%" : "—",
-      m ? (m.precision * 100).toFixed(2) + "%" : "—",
-      m ? (m.recall * 100).toFixed(2) + "%" : "—",
-      m ? (m.f1 * 100).toFixed(2) + "%" : "—",
-      fpr != null ? (fpr * 100).toFixed(2) + "%" : "—",
-      m && m.auc != null ? formatAuc(m.auc) : "—",
-      `${r.n_malicious.toLocaleString()} / ${r.n_rows.toLocaleString()}`,
-    ];
     tr.innerHTML = `
-      <td>${cells[0]}</td>
-      <td class="num">${cells[1]}</td>
-      <td class="num">${cells[2]}</td>
-      <td class="num">${cells[3]}</td>
-      <td class="num">${cells[4]}</td>
-      <td class="num">${cells[5]}</td>
-      <td class="num">${cells[6]}</td>
-      <td class="num">${cells[7]}</td>
+      <td>${escapeHtml(r.model_id)}</td>
+      ${cell("accuracy",  m ? (m.accuracy  * 100).toFixed(2) + "%" : "—")}
+      ${cell("precision", m ? (m.precision * 100).toFixed(2) + "%" : "—")}
+      ${cell("recall",    m ? (m.recall    * 100).toFixed(2) + "%" : "—")}
+      ${cell("f1",        m ? (m.f1        * 100).toFixed(2) + "%" : "—")}
+      ${cell("fpr",       s ? (s.fpr       * 100).toFixed(2) + "%" : "—")}
+      ${cell("auc",       m && m.auc != null ? formatAuc(m.auc) : "—")}
+      <td class="num">${r.n_malicious.toLocaleString()} / ${r.n_rows.toLocaleString()}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -304,6 +325,62 @@ thrReset.addEventListener("click", () => {
   thrSlider.value = String(DEFAULT_THRESHOLD);
   applyThreshold();
 });
+
+$("metrics-csv-btn").addEventListener("click", () => {
+  if (!lastMetrics) return;
+  const blob = new Blob([buildMetricsCsv()], { type: "text/csv" });
+  triggerDownload(blob, "metrics.csv");
+});
+
+function buildMetricsCsv() {
+  const m = lastMetrics;
+  const lines = ["section,key,value"];
+  const head = $("predictor-tag").textContent || "";
+  lines.push(`run,predictor,${csvCell(head)}`);
+  if (lastSource) lines.push(`run,source,${csvCell(lastSource)}`);
+  lines.push(`run,threshold,${threshold.toFixed(4)}`);
+
+  // Headline metrics reflect the live threshold (slider) when truth is present.
+  const cell = lastTotals ? rocCellAt(m, threshold) : null;
+  let acc, prec, rec, f1, tp, fp, fn, tn;
+  if (cell && lastTotals) {
+    tp = Math.round(cell.tpr * lastTotals.nMal);
+    fn = lastTotals.nMal - tp;
+    fp = Math.round(cell.fpr * lastTotals.nBenign);
+    tn = lastTotals.nBenign - fp;
+    acc = lastTotals.total ? (tp + tn) / lastTotals.total : 0;
+    prec = (tp + fp) ? tp / (tp + fp) : 0;
+    rec = lastTotals.nMal ? tp / lastTotals.nMal : 0;
+    f1 = (prec + rec) ? (2 * prec * rec) / (prec + rec) : 0;
+  } else {
+    acc = m.accuracy; prec = m.precision; rec = m.recall; f1 = m.f1;
+    const cm = m.confusion_matrix;
+    tn = cm.tn; fp = cm.fp; fn = cm.fn; tp = cm.tp;
+  }
+  lines.push(`metrics,accuracy,${acc.toFixed(6)}`);
+  lines.push(`metrics,precision,${prec.toFixed(6)}`);
+  lines.push(`metrics,recall,${rec.toFixed(6)}`);
+  lines.push(`metrics,f1,${f1.toFixed(6)}`);
+  if (m.auc != null) lines.push(`metrics,auc,${m.auc.toFixed(6)}`);
+  lines.push(`confusion_matrix,tn,${tn}`);
+  lines.push(`confusion_matrix,fp,${fp}`);
+  lines.push(`confusion_matrix,fn,${fn}`);
+  lines.push(`confusion_matrix,tp,${tp}`);
+
+  if (m.per_attack && m.per_attack.length) {
+    lines.push("");
+    lines.push("per_attack,attack,support,tp,fn,recall");
+    for (const a of m.per_attack) {
+      lines.push(`per_attack,${csvCell(a.label)},${a.support},${a.tp},${a.fn},${a.recall.toFixed(6)}`);
+    }
+  }
+  return lines.join("\n") + "\n";
+}
+
+function csvCell(s) {
+  const v = String(s ?? "");
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
 
 $("page-first").addEventListener("click", () => { page = 1; renderRows(); });
 $("page-prev").addEventListener("click", () => { page = Math.max(1, page - 1); renderRows(); });
@@ -381,6 +458,10 @@ function render(d) {
   $("s-baseline").textContent = `dataset baseline ~${d.summary.baseline_malicious_pct}%`;
 
   lastRows = d.rows;
+  lastBaseline = d.feature_baseline || {};
+  lastExtraCols = d.row_extra_features || [];
+  lastSource = d.source || (pickedFile ? pickedFile.name : null);
+  openRow = null;
   page = 1;
   rowsCap.textContent = d.rows_truncated
     ? `(first ${d.rows.length.toLocaleString()} of ${d.n_rows.toLocaleString()})`
@@ -568,9 +649,12 @@ function renderRows() {
     const p = (r.proba_malicious * 100).toFixed(1);
     const label = predLabel(r);
     const cls = label === "Malicious" ? "malicious" : "benign";
+    const isOpen = openRow === r.row;
     const tr = document.createElement("tr");
+    tr.className = "data-row" + (isOpen ? " open" : "");
+    tr.dataset.row = String(r.row);
     tr.innerHTML = `
-      <td>${r.row}</td>
+      <td><span class="row-toggle">${isOpen ? "▾" : "▸"}</span>${r.row}</td>
       <td><span class="badge ${cls}">${label}</span></td>
       <td><span class="bar ${cls}"><span style="width:${p}%"></span></span>${p}%</td>
       <td>${fmtTrue(r.true)}</td>
@@ -581,11 +665,79 @@ function renderRows() {
       <td>${numOrDash(r["FIN Flag Count"])}</td>
       <td>${numOrDash(r["RST Flag Count"])}</td>
     `;
+    tr.addEventListener("click", () => toggleRow(r.row));
     tbody.appendChild(tr);
+    if (isOpen) tbody.appendChild(buildDetailRow(r));
   }
   if (!pageRows.length) {
     tbody.innerHTML = '<tr><td colspan="10" class="muted small" style="text-align:center;padding:20px;">No rows.</td></tr>';
   }
+}
+
+function toggleRow(rowId) {
+  openRow = openRow === rowId ? null : rowId;
+  renderRows();
+}
+
+function buildDetailRow(r) {
+  const tr = document.createElement("tr");
+  tr.className = "detail-row";
+  const td = document.createElement("td");
+  td.colSpan = 10;
+  td.innerHTML = renderDetail(r);
+  tr.appendChild(td);
+  return tr;
+}
+
+// Render the click-expand panel: row's value vs the upload's median per
+// feature. We flag any value that falls outside [p25, p75] so the viewer's
+// eye lands on what's atypical relative to *this file*. No global stats,
+// no ML attribution -- just an honest "here's what stands out."
+function renderDetail(r) {
+  const cols = lastExtraCols.length ? lastExtraCols : Object.keys(r).filter((k) => !["row", "predicted", "proba_malicious", "true"].includes(k));
+  const cells = cols.map((c) => {
+    const v = r[c];
+    const base = lastBaseline?.[c];
+    if (v == null) return "";
+    const num = Number(v);
+    let badge = "";
+    if (base && Number.isFinite(num)) {
+      if (num > base.p75) badge = '<span class="dev-badge hi">↑</span>';
+      else if (num < base.p25) badge = '<span class="dev-badge lo">↓</span>';
+    }
+    const median = base ? `<span class="muted small">med ${fmtNum(base.median)}</span>` : "";
+    return `
+      <div class="detail-cell">
+        <div class="detail-k">${escapeHtml(c)}</div>
+        <div class="detail-v">${badge}${fmtNum(num)}</div>
+        ${median}
+      </div>
+    `;
+  }).join("");
+
+  const truth = r.true == null
+    ? ""
+    : `<div class="detail-meta">True label: <strong>${escapeHtml(String(r.true))}</strong></div>`;
+
+  return `
+    <div class="detail-panel">
+      <div class="detail-meta">
+        Row ${r.row} · server-side prediction at threshold 0.5: <strong>${escapeHtml(r.predicted)}</strong>
+        · P(Malicious) = ${(r.proba_malicious * 100).toFixed(2)}%
+      </div>
+      ${truth}
+      <div class="detail-grid">${cells}</div>
+      <p class="muted small">↑ above 75th pct of this file · ↓ below 25th pct.</p>
+    </div>
+  `;
+}
+
+function fmtNum(v) {
+  if (v == null || Number.isNaN(v)) return "—";
+  if (typeof v !== "number") return String(v);
+  if (!Number.isFinite(v)) return v > 0 ? "∞" : "-∞";
+  if (Math.abs(v) >= 1e6 || (Math.abs(v) < 0.01 && v !== 0)) return v.toExponential(2);
+  return v.toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
 function formatAuc(x) {

@@ -18,7 +18,7 @@
   <main>
     <section class="upload-card">
       <h2>Upload a flow CSV</h2>
-      <p>CICIDS2017-style features (78 columns). Optional <code>Label</code> column enables metrics. Limit 25 MB.</p>
+      <p>CICIDS2017-style features (78 columns). Optional <code>Label</code> column enables metrics. Limit 50 MB.</p>
       <form id="upload-form">
         <div class="model-row">
           <label for="model-select">Model</label>
@@ -89,7 +89,10 @@
       </div>
 
       <div class="card hidden" id="metrics-card">
-        <h3>Metrics</h3>
+        <div class="card-head">
+          <h3>Metrics</h3>
+          <button id="metrics-csv-btn" type="button" class="ghost small">Download metrics.csv</button>
+        </div>
         <div class="metrics-row">
           <div class="metric-box"><span class="k">Accuracy</span><span class="v" id="m-acc">—</span></div>
           <div class="metric-box"><span class="k">F1</span><span class="v" id="m-f1">—</span></div>

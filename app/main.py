@@ -11,9 +11,12 @@ from fastapi.staticfiles import StaticFiles
 from app import metrics, registry, schema
 from app.predictor import MALICIOUS
 
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 ROW_PREVIEW_CAP = 10_000
 DATASET_MALICIOUS_BASELINE_PCT = 17.0
+# Columns shown in the rows table (first six) + extra context revealed when
+# you expand a row. Order matters here -- the first six are the always-on
+# columns, the rest only show in the expand panel.
 ROW_EXTRA_FEATURES = [
     "Destination Port",
     "Flow Duration",
@@ -21,8 +24,19 @@ ROW_EXTRA_FEATURES = [
     "SYN Flag Count",
     "FIN Flag Count",
     "RST Flag Count",
+    "Total Backward Packets",
+    "Total Length of Fwd Packets",
+    "Total Length of Bwd Packets",
+    "Flow Bytes/s",
+    "Flow Packets/s",
+    "Flow IAT Mean",
+    "Fwd Packet Length Mean",
+    "Bwd Packet Length Mean",
+    "Packet Length Mean",
+    "ACK Flag Count",
+    "PSH Flag Count",
+    "Init_Win_bytes_forward",
 ]
-
 STATIC_DIR = Path(__file__).parent / "static"
 BUNDLED_DIR = Path(__file__).parent / "bundled"
 
@@ -112,15 +126,32 @@ def get_schema():
     return {"features": schema.EXPECTED_FEATURES, "label_column": schema.LABEL_COLUMN}
 
 
+def _read_csv_bytes(raw):
+    """CICIDS2017 ships some attack labels with a Windows-1252 en-dash
+    (byte 0x96) -- pandas' default UTF-8 turns those into U+FFFD and the
+    UI renders the diamond-question-mark. Try utf-8 first and fall back
+    to cp1252; latin-1 is the last-ditch since it can't fail to decode."""
+    last_err = None
+    for enc in ("utf-8", "cp1252", "latin-1"):
+        try:
+            # low_memory=False quiets the mixed-dtype DtypeWarning on
+            # CICIDS columns that occasionally hold "Infinity" literals.
+            return pd.read_csv(io.BytesIO(raw), low_memory=False, encoding=enc)
+        except UnicodeDecodeError as e:
+            last_err = e
+            continue
+    raise HTTPException(400, f"could not decode csv: {last_err}")
+
+
 def _parse_csv(raw):
     if not raw:
         raise HTTPException(400, "empty upload")
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"file too large: {len(raw)} bytes (limit {MAX_UPLOAD_BYTES})")
     try:
-        # low_memory=False avoids the mixed-dtype DtypeWarning chatter on
-        # CICIDS columns that occasionally hold "Infinity" string literals.
-        df = pd.read_csv(io.BytesIO(raw), low_memory=False)
+        df = _read_csv_bytes(raw)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"bad csv: {e}")
     df = schema.normalize_columns(df)
@@ -131,9 +162,14 @@ def _parse_csv(raw):
 
 
 def _split_frame(df):
-    """Pop Label (if present), pull row-extras, and return the X matrix."""
+    """Pop Label (if present), pull row-extras, and return the X matrix.
+    Extras get +/-inf scrubbed to NaN so the row payload survives JSON;
+    CICIDS' rate columns (Flow Bytes/s etc.) hit Infinity when duration=0."""
     y_true = df.pop(schema.LABEL_COLUMN).to_numpy() if schema.LABEL_COLUMN in df.columns else None
-    extras = {c: df[c].to_numpy() for c in ROW_EXTRA_FEATURES if c in df.columns}
+    extras = {}
+    for c in ROW_EXTRA_FEATURES:
+        if c in df.columns:
+            extras[c] = df[c].replace([np.inf, -np.inf], np.nan).to_numpy()
     X = df[schema.EXPECTED_FEATURES].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     return X, y_true, extras
 
@@ -144,9 +180,30 @@ def _score(predictor, df):
     return labels, proba_mal, y_true, extras
 
 
+def _feature_baseline(extras):
+    """Median + IQR per extra feature over the *whole* upload. The row
+    detail panel uses this to call out values that look unusual against
+    the rest of the file. Replaces inf with NaN before percentiles so
+    a single Infinity row doesn't blow up the median."""
+    out = {}
+    for col, arr in extras.items():
+        a = np.asarray(arr, dtype=float)
+        a = a[np.isfinite(a)]
+        if not a.size:
+            continue
+        p25, med, p75 = np.percentile(a, [25, 50, 75])
+        out[col] = {
+            "median": float(med),
+            "p25": float(p25),
+            "p75": float(p75),
+        }
+    return out
+
+
 def _build_payload(predictor, model_id, labels, proba_mal, y_true_raw, extras):
     n = int(len(labels))
     n_mal = int((labels == MALICIOUS).sum())
+
     result_metrics = None
     per_attack = None
     if y_true_raw is not None:
@@ -170,6 +227,10 @@ def _build_payload(predictor, model_id, labels, proba_mal, y_true_raw, extras):
             val = arr[i]
             if isinstance(val, (np.integer, np.floating)):
                 val = val.item()
+            # NaN -> null so the JSON encoder doesn't choke and the UI can
+            # render an em-dash for "missing" without a special case.
+            if isinstance(val, float) and not np.isfinite(val):
+                val = None
             row[col] = val
         rows.append(row)
 
@@ -187,6 +248,7 @@ def _build_payload(predictor, model_id, labels, proba_mal, y_true_raw, extras):
             "baseline_malicious_pct": DATASET_MALICIOUS_BASELINE_PCT,
         },
         "metrics": result_metrics,
+        "feature_baseline": _feature_baseline(extras),
         "rows": rows,
         "rows_truncated": n > ROW_PREVIEW_CAP,
         "row_extra_features": [c for c in ROW_EXTRA_FEATURES if c in extras],
